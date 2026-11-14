@@ -91,6 +91,94 @@ test.describe('Schedule', () => {
     await expect(page.getByRole('heading', { name: 'No sessions match', exact: true })).toBeVisible();
   });
 
+  test('several tracks can be selected at once, and the selection survives a reload', async ({ page, request }) => {
+    const days = await conferenceDays();
+    const { tracks } = await (await request.get(`${API}/bootstrap`)).json();
+    const count = async (day, slug) => {
+      const res = await (await request.get(`${API}/sessions?day=${day}${slug ? `&trackSlug=${slug}` : ''}`)).json();
+      return (Array.isArray(res) ? res : res.sessions).length;
+    };
+    // a day where at least three tracks have sessions, so one stays unselected
+    let day = null;
+    let withSessions = [];
+    for (const d of days) {
+      const found = [];
+      for (const t of tracks) if (await count(d, t.slug) > 0) found.push(t);
+      if (found.length >= 3) { day = d; withSessions = found; break; }
+    }
+    expect(day, 'a day with three populated tracks').not.toBeNull();
+    const [a, b, c] = withSessions;
+    const at = await momentOn(0, MID_SESSION_TIME);
+    const countA = await count(day, a.slug);
+    const countB = await count(day, b.slug);
+    const countAB = await count(day, `${a.slug},${b.slug}`);
+    const countAll = await count(day);
+    expect(countAB).toBe(countA + countB);
+
+    const chip = (t) => page.getByRole('button', { name: t.shortName ?? t.name, exact: true });
+    const all = () => page.getByRole('button', { name: 'All', exact: true });
+    const results = page.getByTestId('result-count');
+    const openRail = async () => {
+      const filters = page.getByRole('button', { name: /^Filters/ });
+      if (await filters.isVisible()) await filters.click();
+    };
+    const sessionsText = (n) => `${n} session${n === 1 ? '' : 's'}`;
+
+    for (const view of ['grid', 'list']) {
+      await visit(page, `/schedule?day=${day}&view=${view}`, { at });
+      await waitForResults(page);
+      await openRail();
+      await expect(results).toHaveText(sessionsText(countAll));
+      await expect(all()).toHaveAttribute('aria-pressed', 'true');
+
+      await chip(a).click();
+      await chip(b).click();
+      await expect(page).toHaveURL(new RegExp(`track=${a.slug}(,|%2C)${b.slug}`));
+      await expect(results).toHaveText(sessionsText(countAB));
+      await expect(chip(a)).toHaveAttribute('aria-pressed', 'true');
+      await expect(chip(b)).toHaveAttribute('aria-pressed', 'true');
+      await expect(chip(c)).toHaveAttribute('aria-pressed', 'false');
+      await expect(all()).toHaveAttribute('aria-pressed', 'false');
+      await shotForPR(page, 'two tracks selected');
+
+      // a reload restores the same selection
+      await page.reload();
+      await waitForResults(page);
+      await openRail();
+      await expect(results).toHaveText(sessionsText(countAB));
+      await expect(chip(a)).toHaveAttribute('aria-pressed', 'true');
+      await expect(chip(b)).toHaveAttribute('aria-pressed', 'true');
+
+      // deselecting one narrows to the other
+      await chip(a).click();
+      await expect(page).toHaveURL(new RegExp(`track=${b.slug}(&|$)`));
+      await expect(results).toHaveText(sessionsText(countB));
+      await expect(chip(a)).toHaveAttribute('aria-pressed', 'false');
+
+      // deselecting the last one shows every track
+      await chip(b).click();
+      await expect(page).not.toHaveURL(/track=/);
+      await expect(results).toHaveText(sessionsText(countAll));
+
+      // All clears a two-track selection
+      await chip(a).click();
+      await chip(b).click();
+      await expect(results).toHaveText(sessionsText(countAB));
+      await all().click();
+      await expect(page).not.toHaveURL(/track=/);
+      await expect(results).toHaveText(sessionsText(countAll));
+      await expect(all()).toHaveAttribute('aria-pressed', 'true');
+    }
+
+    // an existing single-track link still shows that one track
+    await visit(page, `/schedule?day=${day}&track=${a.slug}&view=list`, { at });
+    await waitForResults(page);
+    await openRail();
+    await expect(results).toHaveText(sessionsText(countA));
+    await expect(chip(a)).toHaveAttribute('aria-pressed', 'true');
+    await expect(chip(b)).toHaveAttribute('aria-pressed', 'false');
+  });
+
   test('Clear filters clears the search and brings sessions back', async ({ page }) => {
     await visit(page, '/schedule?q=zzqx&view=list');
     await page.getByRole('button', { name: 'Clear filters' }).click();

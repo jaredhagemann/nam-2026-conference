@@ -172,6 +172,33 @@ describe('Every endpoint answers', () => {
     }
   });
 
+  describe('Session filters', () => {
+    const ids_ = (list) => list.map((s) => s.id).sort((a, b) => a - b);
+
+    test('trackSlug takes several comma-separated tracks and returns their union', async () => {
+      const boot = await api.json('/bootstrap');
+      const [a, b] = boot.tracks.map((t) => t.slug);
+      const [onlyA, onlyB, both] = await Promise.all([
+        api.json(`/sessions?trackSlug=${a}`),
+        api.json(`/sessions?trackSlug=${b}`),
+        api.json(`/sessions?trackSlug=${a},${b}`),
+      ]);
+      assert.ok(onlyA.length > 0 && onlyB.length > 0);
+      assert.deepEqual(ids_(both), ids_([...onlyA, ...onlyB]));
+      assert.equal(both.length, onlyA.length + onlyB.length);
+      assert.ok(both.every((s) => [a, b].includes(s.track.slug)));
+    });
+
+    test('a single trackSlug, and a stray comma, behave as before', async () => {
+      const boot = await api.json('/bootstrap');
+      const a = boot.tracks[0].slug;
+      const single = await api.json(`/sessions?trackSlug=${a}`);
+      const stray = await api.json(`/sessions?trackSlug=${a},`);
+      assert.deepEqual(ids_(stray), ids_(single));
+      assert.ok(single.every((s) => s.track.slug === a));
+    });
+  });
+
   test('the whole surface is covered by this file', async () => {
     // Read the routers and assert every path we mount is exercised above, so
     // adding an endpoint without a test fails here rather than going unnoticed.
